@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+boto3
+spacy
+nltk
+pydantic
+sentence-transformers
+pymupdf
+python-multipart
