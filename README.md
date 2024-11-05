@@ -4,30 +4,12 @@ Este proyecto es un microservicio desarrollado con FastAPI que se encarga de rea
 
 ## Estructura del Proyecto
 
+
 ```
-fastapi-nlp-microservice
-├── app
-│   ├── main.py                # Punto de entrada de la aplicación
-│   ├── api
-│   │   └── v1
-│   │       └── endpoints
-│   │           └── nlp.py     # Rutas para el procesamiento de NLP
-│   ├── core
-│   │   └── config.py          # Configuración de la aplicación
-│   ├── models
-│   │   └── nlp_model.py       # Modelos de datos para NLP
-│   ├── schemas
-│   │   └── nlp_schema.py      # Esquemas de validación de datos
-│   ├── services
-│   │   └── nlp_service.py     # Lógica de negocio para NLP
-│   └── utils
-│       └── nlp_utils.py       # Funciones utilitarias para NLP
-├── tests
-│   ├── test_nlp.py            # Pruebas unitarias para el microservicio
-├── requirements.txt            # Dependencias del proyecto
-├── Dockerfile                  # Imagen de Docker para el microservicio
-└── README.md                   # Documentación del proyecto
+fastapi-nlp-microservice ├── app │ ├── main.py # Punto de entrada de la aplicación │ ├── api │ │ └── v1 │ │ └── endpoints │ │ └── nlp.py # Rutas para el procesamiento de NLP │ ├── core │ │ └── config.py # Configuración de la aplicación │ ├── models │ │ └── nlp_model.py # Modelos de datos para NLP │ ├── schemas │ │ └── nlp_schema.py # Esquemas de validación de datos │ ├── services │ │ └── nlp_service.py # Lógica de negocio para NLP │ └── utils │ └── nlp_utils.py # Funciones utilitarias para NLP ├── tests │ ├── test_nlp.py # Pruebas unitarias para el microservicio ├── requirements.txt # Dependencias del proyecto ├── Dockerfile # Imagen de Docker para el microservicio └── README.md
 ```
+
+# Documentación del proyecto
 
 ## Instalación
 

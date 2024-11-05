@@ -5,6 +5,7 @@ spacy
 nltk
 pydantic
 sentence-transformers
+psycopg2
 pymupdf
 python-multipart
 pika
