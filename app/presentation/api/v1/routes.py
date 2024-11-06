@@ -1,5 +1,7 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
+from numpy import mean
+from app.infraestructure.metrics.performance_metrics import PerformanceMetrics
 from app.domain.entities.document import Document
 from app.domain.entities.analysis import Analysis
 from app.infraestructure.database.postgres import PostgresDatabase
@@ -9,6 +11,7 @@ from datetime import datetime
 import uuid
 
 router = APIRouter()
+metrics = PerformanceMetrics()
 
 @router.post("/document")
 async def upload_document(file: UploadFile = File(...)):
@@ -16,7 +19,7 @@ async def upload_document(file: UploadFile = File(...)):
         document_id = str(uuid.uuid4())
         filename = file.filename
         content = await file.read()
-        created_at = datetime.utcnow()
+        created_at = datetime.now(datetime.timezone.utc)
 
         document = Document(
             id=document_id,
@@ -66,3 +69,24 @@ async def get_analysis(document_id: str):
         return JSONResponse(content=analysis.to_dict(), status_code=200)
     except Exception as e:
         raise HTTPException(status_code=500, detail="Error al recuperar el análisis")
+
+@router.get("/metrics")
+async def get_processing_metrics():
+    """Endpoint para obtener métricas de procesamiento"""
+    return metrics.get_metrics()
+
+@router.get("/metrics/document/{document_id}")
+async def get_document_metrics(document_id: str):
+    """Obtener métricas específicas de un documento"""
+    doc_time = metrics.document_times.get(document_id)
+    if not doc_time:
+        raise HTTPException(status_code=404, detail="Métricas no encontradas")
+    
+    return {
+        "document_id": document_id,
+        "processing_time": doc_time,
+        "comparison": {
+            "vs_average": doc_time - mean(metrics.document_times.values()),
+            "percentile": len([t for t in metrics.document_times.values() if t <= doc_time]) / len(metrics.document_times) * 100
+        }
+    }

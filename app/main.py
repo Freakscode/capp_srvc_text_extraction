@@ -1,49 +1,75 @@
+import uuid
+import base64
 import logging
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import JSONResponse
-# from app.api.v1.endpoints import nlp  # Eliminado
-
-from app.domain.entities.document import Document
-from app.domain.entities.analysis import Analysis
-from app.domain.repositories.document_repository import DocumentRepository
-from app.domain.value_objects.nlp_result import NLPResult
-from app.infraestructure.database.postgres import PostgresDatabase
+from typing import List, Dict
+from fastapi.responses import HTMLResponse
 from app.infraestructure.messaging.rabbitmq import RabbitMQClient
-from app.infraestructure.storage.s3 import S3Client
-from app.use_cases.extract_text import ExtractTextUseCase
-from app.use_cases.process_document import ProcessDocumentUseCase
-from datetime import datetime
-import uuid
+from app.core.config import get_settings
 
 app = FastAPI()
+settings = get_settings()
 
-# Configuración básica del logger
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.StreamHandler()
-    ]
-)
+def create_batch(files: List[Dict]) -> List[List[Dict]]:
+    """Crea batches de archivos del tamaño especificado"""
+    return [files[i:i + settings.BATCH_SIZE] 
+            for i in range(0, len(files), settings.BATCH_SIZE)]
 
-# Incluir el router de NLP - Eliminado
-# app.include_router(nlp.router, prefix="/api/v1/nlp")
-
-@app.get("/")
-def read_root():
-    return {"message": "Microservicio NLP funcionando correctamente"}
-
-# Endpoint para manejar la carga de documentos
-@app.post("/document")
-async def upload_document(file: UploadFile = File(...)):
-    ...
-
-# Endpoint para manejar la recuperación de documentos
-@app.get("/document/{document_id}")
-async def get_document(document_id: str):
-    ...
-
-# Endpoint para manejar la recuperación de análisis
-@app.get("/analysis/{document_id}")
-async def get_analysis(document_id: str):
-    ...
+@app.post("/documents")
+async def upload_documents(
+    files: List[UploadFile] = File(..., description="Múltiples archivos PDF")
+):
+    if not files:
+        raise HTTPException(
+            status_code=400, 
+            detail="No se proporcionaron archivos"
+        )
+    
+    try:
+        rabbitmq = RabbitMQClient()
+        documents = []
+        
+        # Procesar archivos
+        for file in files:
+            content = await file.read()
+            document_id = str(uuid.uuid4())
+            content_base64 = base64.b64encode(content).decode('utf-8')
+            
+            document = {
+                "document_id": document_id,
+                "filename": file.filename,
+                "content": content_base64,
+                "content_type": "application/pdf"
+            }
+            
+            # Publicar en cola de subida
+            rabbitmq.publish_upload(document)
+            documents.append(document)
+            await file.close()
+        
+        # Crear y publicar batches para procesamiento
+        batches = create_batch(documents)
+        for batch in batches:
+            rabbitmq.publish_processing(batch)
+        
+        rabbitmq.close()
+        
+        return {
+            "status": "success",
+            "message": f"Se recibieron {len(files)} archivos",
+            "batches": len(batches),
+            "documents": [
+                {"id": doc["document_id"], "filename": doc["filename"]} 
+                for doc in documents
+            ]
+        }
+        
+    except Exception as e:
+        logging.error(f"Error procesando archivos: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Error interno al procesar los archivos"
+        )
+    finally:
+        for file in files:
+            await file.close()
