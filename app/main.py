@@ -6,9 +6,13 @@ from typing import List, Dict
 from fastapi.responses import HTMLResponse
 from app.infraestructure.messaging.rabbitmq import RabbitMQClient
 from app.core.config import get_settings
+from app.presentation.api.v1.routes import router
+
 
 app = FastAPI()
+app.include_router(router, prefix="/api/v1")
 settings = get_settings()
+
 
 def create_batch(files: List[Dict]) -> List[List[Dict]]:
     """Crea batches de archivos del tamaño especificado"""

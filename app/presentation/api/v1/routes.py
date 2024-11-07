@@ -1,3 +1,4 @@
+import logging
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
 from numpy import mean
@@ -7,8 +8,12 @@ from app.domain.entities.analysis import Analysis
 from app.infraestructure.database.postgres import PostgresDatabase
 from app.infraestructure.storage.s3 import S3Client
 from app.infraestructure.messaging.rabbitmq import RabbitMQClient
+from app.preprocessing.pdf_extractor import PDFExtractor
+from app.preprocessing.normalizer import TextNormalizer
+from app.preprocessing.cleaner import TextCleaner
 from datetime import datetime
 import uuid
+import os
 
 router = APIRouter()
 metrics = PerformanceMetrics()
@@ -90,3 +95,51 @@ async def get_document_metrics(document_id: str):
             "percentile": len([t for t in metrics.document_times.values() if t <= doc_time]) / len(metrics.document_times) * 100
         }
     }
+
+@router.post("/test_document", summary="Procesar un solo documento PDF para probar el flujo completo")
+async def test_process_document(file: UploadFile = File(..., description="Archivo PDF para prueba")):
+    if not file:
+        raise HTTPException(status_code=400, detail="No se proporcionó ningún archivo")
+    
+    document_id = str(uuid.uuid4())
+    temp_pdf_path = f"/tmp/{document_id}.pdf"
+    
+    try:
+        # Guardar el archivo temporalmente
+        with open(temp_pdf_path, "wb") as f:
+            f.write(await file.read())
+        
+        # Inicializar procesadores
+        extractor = PDFExtractor()
+        normalizer = TextNormalizer()
+        cleaner = TextCleaner()
+        db = PostgresDatabase()
+        
+        # Extraer contenido del PDF
+        extracted_data = extractor.extract_document(temp_pdf_path)
+        
+        # Procesar texto
+        cleaned_content = [cleaner.clean(text) for text in extracted_data.get('content', [])]
+        normalized_content = [normalizer.normalize(text) for text in cleaned_content]
+        
+        # Actualizar datos extraídos con texto limpio y normalizado
+        extracted_data['cleaned_content'] = cleaned_content
+        extracted_data['normalized_content'] = normalized_content
+        
+        # Guardar análisis en la base de datos
+        db.save_document_analysis(document_id, extracted_data)
+        
+        return JSONResponse(content={
+            "document_id": document_id,
+            "extracted_data": extracted_data
+        })
+    
+    except Exception as e:
+        logging.error(f"Error procesando el documento: {e}")
+        raise HTTPException(status_code=500, detail="Error interno al procesar el documento")
+    
+    finally:
+        # Limpiar recursos
+        if os.path.exists(temp_pdf_path):
+            os.remove(temp_pdf_path)
+        extractor.close()
