@@ -12,3 +12,4 @@ pika
 langdetect
 redis
 pydantic-settings
+pdfminer.six==20201018
