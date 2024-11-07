@@ -1,40 +1,34 @@
+# app/infrastructure/aws_s3.py
 import boto3
 from botocore.exceptions import NoCredentialsError
 from app.domain.entities.document import Document
-import json
 
 class S3Client:
-    def __init__(self, aws_access_key_id, aws_secret_access_key, bucket_name, region_name='us-east-1'):
-        self.s3 = boto3.client(
-            's3',
-            aws_access_key_id=aws_access_key_id,
-            aws_secret_access_key=aws_secret_access_key,
-            region_name=region_name
-        )
+    def __init__(self, aws_access_key_id: str, aws_secret_access_key: str, bucket_name: str):
+        """Inicializa el cliente de S3."""
         self.bucket_name = bucket_name
+        try:
+            self.s3 = boto3.client(
+                's3',
+                aws_access_key_id=aws_access_key_id,
+                aws_secret_access_key=aws_secret_access_key
+            )
+            print("Cliente de S3 inicializado correctamente.")
+        except Exception as e:
+            print(f"Error al inicializar el cliente de S3: {e}")
+            raise e
 
     def upload_document(self, document: Document):
+        """Sube un documento a S3."""
         try:
-            document_data = json.dumps(document.to_dict())
-            self.s3.put_object(Bucket=self.bucket_name, Key=document.id, Body=document_data)
-            return True
+            self.s3.upload_file(document.filename, self.bucket_name, document.id)
+            print(f"Documento {document.id} subido a S3 correctamente.")
+        except FileNotFoundError:
+            print(f"El archivo {document.filename} no fue encontrado.")
+            raise
         except NoCredentialsError:
-            print("Credentials not available")
-            return False
-
-    def download_document(self, document_id: str) -> Document:
-        try:
-            response = self.s3.get_object(Bucket=self.bucket_name, Key=document_id)
-            document_data = json.loads(response['Body'].read().decode('utf-8'))
-            document = Document(
-                id=document_data['id'],
-                filename=document_data['filename'],
-                created_at=document_data['created_at'],
-                sections=document_data['sections'],
-                embeddings=document_data['embeddings'],
-                metadata=document_data['metadata']
-            )
-            return document
-        except NoCredentialsError:
-            print("Credentials not available")
-            return None
+            print("Credenciales de AWS no disponibles.")
+            raise
+        except Exception as e:
+            print(f"Error al subir el documento a S3: {e}")
+            raise e
