@@ -1,131 +1,181 @@
-# app/preprocessing/pdf_extractor.py
-from pdfminer.high_level import extract_pages, extract_text
-from pdfminer.layout import LTTextContainer, LTChar, LTLine
+from typing import Dict, List, Optional, Tuple
+import logging
+from concurrent.futures import ThreadPoolExecutor
 import spacy
-from typing import Dict, List, Tuple
-import re
+from pdfminer.high_level import extract_pages
+from pdfminer.layout import (
+    LTTextContainer, LTChar, LTLine, 
+    LTFigure, LTTable, LAParams,
+    LTTextBox, LTTextBoxHorizontal
+)
+from .exceptions import PDFProcessingError
 
 class PDFExtractor:
-    def __init__(self):
-        # Cargar modelos de spaCy para español e inglés
-        self.nlp_es = spacy.load('es_core_news_lg')  # Modelo grande para mejor precisión
-        self.nlp_en = spacy.load('en_core_web_sm')   # Modelo pequeño para términos en inglés
+    def __init__(self, cache_dir: Optional[str] = None):
+        """Inicializa el extractor de PDF con opciones avanzadas"""
+        self._setup_logging()
+        self._load_models(cache_dir)
+        self._setup_processors()
+        self._initialize_thread_pool()
         
-    def extract_text_with_positions(self, pdf_path: str) -> List[Dict]:
-        """Extrae texto con información de posicionamiento y estilo"""
-        paragraphs = []
+    def _setup_logging(self):
+        """Configura el sistema de logging"""
+        self.logger = logging.getLogger(__name__)
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        handler.setFormatter(formatter)
+        self.logger.addHandler(handler)
+        self.logger.setLevel(logging.INFO)
         
-        for page_layout in extract_pages(pdf_path):
-            for element in page_layout:
-                if isinstance(element, LTTextContainer):
-                    paragraph = {
-                        'text': element.get_text().strip(),
-                        'position': {
-                            'x0': element.x0,
-                            'y0': element.y0,
-                            'x1': element.x1,
-                            'y1': element.y1,
-                            'page_number': page_layout.pageid
-                        },
-                        'style': self._extract_style_info(element)
-                    }
-                    if paragraph['text']:
-                        paragraphs.append(paragraph)
+    def _load_models(self, cache_dir: Optional[str]):
+        """Carga modelos NLP con manejo de errores mejorado"""
+        try:
+            if cache_dir:
+                spacy.prefer_gpu()
+                self.nlp_es = spacy.load('es_core_news_lg', disable=['ner'])
+                self.nlp_en = spacy.load('en_core_web_sm', disable=['ner'])
+                self.nlp_es.max_length = 2000000
+                self.nlp_en.max_length = 2000000
+            else:
+                self.logger.warning("No se especificó directorio de caché")
+                self.nlp_es = spacy.load('es_core_news_lg')
+                self.nlp_en = spacy.load('en_core_web_sm')
+        except OSError as e:
+            self.logger.error(f"Error cargando modelos NLP: {e}")
+            raise PDFProcessingError(f"Error en carga de modelos: {str(e)}")
+            
+    def _setup_processors(self):
+        """Configura parámetros de procesamiento PDF"""
+        self.la_params = LAParams(
+            line_margin=0.5,
+            word_margin=0.1,
+            char_margin=2.0,
+            boxes_flow=0.5,
+            detect_vertical=True,
+            all_texts=True,
+            paragraph_indent=2.0,
+            line_overlap=0.5,
+            line_spacing=0.5,
+        )
         
-        return paragraphs
-    
+        self.processors = {
+            'text': self._process_text_element,
+            'table': self._process_table,
+            'figure': self._process_figure
+        }
+        
+    def _initialize_thread_pool(self):
+        """Inicializa pool de hilos para procesamiento paralelo"""
+        self.executor = ThreadPoolExecutor(max_workers=4)
+        
+    def extract_document(self, pdf_path: str) -> Dict:
+        """Punto de entrada principal para extracción de documento"""
+        try:
+            self.logger.info(f"Iniciando procesamiento de {pdf_path}")
+            
+            result = {
+                'metadata': self._extract_metadata(pdf_path),
+                'content': [],
+                'structure': [],
+                'tables': [],
+                'figures': [],
+                'statistics': {}
+            }
+            
+            pages = list(extract_pages(pdf_path, laparams=self.la_params))
+            futures = []
+            
+            for page_num, page in enumerate(pages):
+                future = self.executor.submit(
+                    self._process_page, 
+                    page, 
+                    page_num
+                )
+                futures.append(future)
+                
+            for future in futures:
+                page_result = future.result()
+                result['content'].extend(page_result['content'])
+                result['tables'].extend(page_result['tables'])
+                result['figures'].extend(page_result['figures'])
+                result['structure'].append(page_result['structure'])
+                
+            result['statistics'] = self._calculate_statistics(result)
+            
+            self.logger.info(f"Procesamiento completado: {pdf_path}")
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Error procesando {pdf_path}: {e}")
+            raise PDFProcessingError(f"Error en procesamiento: {str(e)}")
+            
+    def _process_page(self, page, page_num: int) -> Dict:
+        """Procesa una página individual del PDF"""
+        result = {
+            'content': [],
+            'tables': [],
+            'figures': [],
+            'structure': {
+                'page_num': page_num,
+                'layout': self._analyze_page_layout(page)
+            }
+        }
+        
+        for element in page:
+            processor = self.processors.get(element.__class__.__name__.lower())
+            if processor:
+                processed = processor(element, page)
+                if processed:
+                    if 'text' in processed:
+                        result['content'].append(processed)
+                    elif 'table' in processed:
+                        result['tables'].append(processed['table'])
+                    elif 'figure' in processed:
+                        result['figures'].append(processed['figure'])
+                    
+        return result
+            
+    def _process_text_element(self, element, page) -> Optional[Dict]:
+        """Procesa elemento de texto con análisis detallado"""
+        text = element.get_text().strip()
+        if not text:
+            return None
+        
+        return {
+            'text': text,
+            'position': self._get_element_position(element, page),
+            'style': self._extract_style_info(element),
+            'hierarchy': self._detect_hierarchy(element, text),
+            'language': self._detect_language(text),
+            'column': self._detect_column(element, page),
+            'type': self._detect_element_type(element, text)
+        }
+        
     def _extract_style_info(self, element) -> Dict:
-        """Extrae información de estilo del texto"""
+        """Extrae información detallada de estilo"""
         chars = [c for c in element if isinstance(c, LTChar)]
         if not chars:
             return {}
             
         return {
-            'font_name': chars[0].fontname,
-            'font_size': round(chars[0].size, 2),
-            'is_bold': 'Bold' in chars[0].fontname,
-            'is_italic': 'Italic' in chars[0].fontname
+            'font': {
+                'name': chars[0].fontname,
+                'size': round(chars[0].size, 2),
+                'family': self._extract_font_family(chars[0].fontname)
+            },
+            'style': {
+                'bold': 'Bold' in chars[0].fontname,
+                'italic': 'Italic' in chars[0].fontname,
+                'color': self._extract_color(chars[0])
+            },
+            'metrics': {
+                'line_height': self._calculate_line_height(element),
+                'char_spacing': self._calculate_char_spacing(chars)
+            }
         }
 
-    def process_text(self, paragraphs: List[Dict]) -> List[Dict]:
-        """Procesa el texto con análisis lingüístico"""
-        processed_paragraphs = []
-        
-        for paragraph in paragraphs:
-            # Análisis en español
-            doc_es = self.nlp_es(paragraph['text'])
-            
-            # Detectar términos en inglés
-            english_terms = self._detect_english_terms(paragraph['text'])
-            
-            processed_text = {
-                'original': paragraph,
-                'sentences': self._process_sentences(doc_es),
-                'entities': self._extract_entities(doc_es),
-                'english_terms': english_terms,
-                'linguistic_features': self._extract_linguistic_features(doc_es)
-            }
-            
-            processed_paragraphs.append(processed_text)
-            
-        return processed_paragraphs
-    
-    def _detect_english_terms(self, text: str) -> List[Dict]:
-        """Detecta y analiza términos en inglés"""
-        # Patrón para detectar posibles términos en inglés (siglas, términos técnicos)
-        english_pattern = r'\b[A-Z]{2,}(?:\s[A-Z]{2,})*\b|\b[A-Z][a-z]+(?:[A-Z][a-z]+)*\b'
-        potential_terms = re.finditer(english_pattern, text)
-        
-        english_terms = []
-        for term in potential_terms:
-            doc_en = self.nlp_en(term.group())
-            if doc_en._.language['language'] == 'en':
-                english_terms.append({
-                    'term': term.group(),
-                    'position': (term.start(), term.end()),
-                    'analysis': {
-                        'pos': doc_en[0].pos_,
-                        'tag': doc_en[0].tag_,
-                        'is_technical': self._is_technical_term(doc_en[0])
-                    }
-                })
-        
-        return english_terms
-    
-    def _process_sentences(self, doc) -> List[Dict]:
-        """Procesa cada oración del texto"""
-        return [{
-            'text': sent.text,
-            'start_char': sent.start_char,
-            'end_char': sent.end_char,
-            'sentiment': sent._.polarity if hasattr(sent._, 'polarity') else None,
-            'key_phrases': self._extract_key_phrases(sent)
-        } for sent in doc.sents]
-    
-    def _extract_entities(self, doc) -> List[Dict]:
-        """Extrae entidades nombradas con contexto"""
-        return [{
-            'text': ent.text,
-            'label': ent.label_,
-            'start_char': ent.start_char,
-            'end_char': ent.end_char,
-            'context': self._get_entity_context(doc, ent)
-        } for ent in doc.ents]
-    
-    def _extract_linguistic_features(self, doc) -> Dict:
-        """Extrae características lingüísticas detalladas"""
-        return {
-            'tokens': [{
-                'text': token.text,
-                'lemma': token.lemma_,
-                'pos': token.pos_,
-                'tag': token.tag_,
-                'dep': token.dep_,
-                'is_stop': token.is_stop,
-                'vector': token.vector.tolist()
-            } for token in doc],
-            'noun_chunks': [{
-                'text': chunk.text,
-                'root': chunk.root.text
-            } for chunk in doc.noun_chunks]
-        }
+    def close(self):
+        """Limpia recursos"""
+        self.executor.shutdown()
